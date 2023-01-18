@@ -1,0 +1,319 @@
+---
+title: "Age Curves"
+subtitle: "Baseball Analytics Club: J-Term"
+output: html_document
+date: 'January, 2023'
+---
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300&family=Source+Sans+Pro&display=swap" rel="stylesheet">
+<style>
+
+body{
+font-family: 'Source Sans Pro', sans-serif;
+}
+
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+# load packages
+library(Lahman)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(tidyr)
+```
+
+## _Choose a player:_
+```{r, message=FALSE, warning=FALSE}
+# firstName <- "Brandon"
+# lastName<- "Belt"
+# firstName <- "Xander"
+# lastName<- "Bogaerts"
+firstName <- "Carlos"
+lastName<- "Correa"
+```
+
+```{r, message=FALSE, warning=FALSE}
+# pull player id
+batter_id <- People %>% 
+  filter(nameFirst == firstName, nameLast == lastName) %>% 
+  pull(playerID)
+
+# Get chosen player's batting stats and calculate age for each season
+batter <- battingStats() %>% 
+  filter(playerID == batter_id) %>% 
+  inner_join(People, by = "playerID") %>% 
+  mutate(age = yearID - birthYear)
+
+# Create player summary for comps
+batter_summary <- batter %>% 
+  summarize(debut = min(age), current = max(age), 
+            TotalG = sum(G), 
+            CareerAvg = round(sum(H) / sum(AB), 3),
+            CareerOBP = round(sum(H + BB + HBP) / sum(AB + BB + HBP + SF), 3),
+            CareerSLG = round(sum(H + X2B + 2*X3B + 3*HR) / sum(AB), 3),
+            avgOPS = mean(OPS), highOPS = max(OPS)) %>%
+  mutate(CareerISO = CareerSLG - CareerAvg,
+         CareerOPS = CareerOBP - CareerSLG)
+```
+
+```{r, message=FALSE, warning=FALSE, fig.align='center'}
+# Graph player's career to date
+batter %>% 
+  ggplot(aes(x = age, y = OPS)) +
+  geom_point(aes(size = AB)) +
+  geom_smooth() +
+  geom_vline(xintercept = batter_summary$current, color = "red", size = 1) +
+  geom_vline(xintercept = batter$age[batter$OPS == batter_summary$highOPS],
+             color = "purple", size = 1, alpha = 0.5) +
+  # added in a line to show which age had highOPS
+  labs(title = paste(batter$nameFirst, batter$nameLast)) + 
+  #scale_x_continuous(breaks = c(23:33)) + # updated axis to be whole numbers
+  scale_x_continuous(breaks = c(min(batter$age):max(batter$age))) +
+        # more universal way to fix the axis increments
+  theme_bw()
+```
+
+<span style="color: darkblue;">
+Updates from the 1/17 meeting:
+</span>
+
+### Comparison
+
+#### _Pick the positions_
+
+```{r}
+positions <- c("2B", "SS", "3B")
+```
+
+```{r, message=FALSE, warning=FALSE, fig.align='center'}
+# find players who played comparable position(s) as chosen player
+fielders <- Fielding %>%
+  filter(POS %in% positions, yearID > 1990)%>%
+  group_by(playerID, yearID)%>%
+  summarize(games = sum(G)) %>% 
+  filter(games > 100) %>% 
+  group_by(playerID) %>% 
+  summarize(seasons = n()) %>% 
+  filter(seasons > 2) %>% 
+  ungroup
+
+# add age
+batting <- battingStats() %>% 
+  inner_join(People, by = "playerID") %>% 
+  mutate(age = yearID - birthYear)
+
+# Find comps for chosen player - based on age, OPS - ranked by similarity
+Comps <- batting %>% 
+  group_by(playerID, nameFirst, nameLast) %>% 
+  mutate(debut = min(age), reachedage = max(age) > batter_summary$current) %>%
+  filter(debut < batter_summary$debut + 2, yearID > 1990, reachedage, 
+         age < batter_summary$current + 2) %>%
+  summarize(CareerOBP = round(sum(H + BB + HBP) / sum(AB + BB + HBP + SF), 3),
+            CareerAvg = round(sum(H) / sum(AB), 3),
+            CareerSLG = round(sum(H + X2B + 2*X3B + 3*HR) / sum(AB), 3),
+            TotalAB = sum(AB), highOPS = max(OPS)) %>%
+  mutate(CareerISO = CareerSLG - CareerAvg,
+         CareerOPS = CareerOBP + CareerSLG,
+         OBPDiff = round(CareerOBP - batter_summary$CareerOBP, 3),
+         ISODiff = round(CareerISO - batter_summary$CareerISO, 3)) %>%
+  filter(TotalAB > 1000, CareerOPS > batter_summary$CareerOPS - 0.050, 
+         CareerOPS < batter_summary$CareerOPS + 0.050, 
+         highOPS > batter_summary$highOPS - 0.050,
+         highOPS < batter_summary$highOPS + 0.050) %>%
+  ungroup() %>%
+  inner_join(fielders, by = "playerID") %>%
+  mutate(CompScore = abs(OBPDiff) + abs(ISODiff)) %>%
+  arrange(CompScore)
+
+# top comps
+head(Comps)
+nrow(Comps)
+
+# find playerIDs for top 4 comps
+example_id <- People %>% 
+  slice_head(n = 4)%>% 
+  pull(playerID)
+
+# get their batting stats, calculate age, and add name
+example <- battingStats() %>% 
+  filter(playerID %in% example_id) %>% 
+  inner_join(People, by = "playerID") %>% 
+  mutate(age = yearID - birthYear, name = paste(nameFirst, nameLast))
+
+# Graph comps for the chosen players
+example %>% 
+  ggplot(aes(x = age, y = OPS)) +
+  geom_point(aes(size = G)) +
+  geom_smooth(span = 1) +
+  geom_vline(xintercept = batter_summary$current, color = "red", size = 1) +
+  geom_vline(xintercept = batter$age[batter$OPS == batter_summary$highOPS],
+             color = "purple", size = 1) +
+  labs(title = paste("Comps for", firstName, lastName)) +
+  #scale_x_continuous(breaks = c(min(example$age):max(example$age))) +
+  theme_bw() +
+  facet_wrap(vars(name))
+# are we keeping the red line at 33 because that is how old Brandon Belt is,
+# and we want to predict/get and idea of what his OPS will be like in coming
+# years?
+```
+
+<span style="color: darkblue;">
+From 1/3 meeting:
+</span>
+
+## Random player:
+```{r, message=FALSE, warning=FALSE, fig.align='center'}
+ids <- Batting %>% 
+  group_by(playerID) %>% 
+  mutate(seasons = n()) %>% 
+  filter(seasons > 5, yearID > 1960) %>% 
+  pull(playerID) %>% 
+  unique()
+# pull player id
+example_id <- People %>% 
+  filter(playerID == sample(ids, 1)) %>% 
+  pull(playerID)
+
+# get their batting stats
+example <- battingStats() %>% filter(playerID == example_id)
+
+# add in the age variable
+example_update <- example %>% 
+  inner_join(People, by = "playerID") %>% 
+  mutate(age = yearID - birthYear)
+
+example_update %>% 
+  ggplot(aes(x = age, y = OPS)) +
+  geom_point(aes(size = G)) +
+  geom_smooth() +
+  geom_vline(xintercept = 33, color = "red", size = 1) +
+  labs(title = paste(example_update$nameFirst, example_update$nameLast),
+       subtitle = paste("Career: ", min(example_update$yearID), " - ",
+                        max(example_update$yearID))) +
+  theme_bw()
+```
+
+### Joining data frames
+
+Filtering battingStats to be group of interest.
+```{r, message=FALSE, warning=FALSE}
+base <- battingStats() %>%
+  filter(yearID > 1990) %>%
+  inner_join(People, by = "playerID") %>% 
+  mutate(age = yearID - birthYear) %>%
+  group_by(playerID, nameFirst, nameLast) %>% 
+  mutate(debut = min(age), current = max(age), TotalG = sum(G), 
+         avgOPS = mean(OPS), highOPS = max(OPS)) 
+base <- base %>% 
+  dplyr::select(-c(deathYear:deathCity, deathDate))
+```
+
+Merge with Fielding:
+```{r, message=FALSE, warning=FALSE}
+# filter variables
+subFielding <- Fielding %>% 
+  filter(yearID > 1990) %>% 
+  dplyr::select(playerID, yearID, POS, GS, InnOuts, PO, A, E, DP)
+
+basewf <- base %>% 
+  inner_join(subFielding, by = c("playerID", "yearID"))
+```
+
+Add Salary:
+```{r, message=FALSE, warning=FALSE}
+subSal <- Salaries %>% 
+  dplyr::select(-c(teamID, lgID)) #subset to take out repeated variables
+basewf_ws <- basewf %>% 
+  inner_join(subSal, by = c("playerID", "yearID"))
+```
+
+```{r, message=FALSE, warning=FALSE}
+# reorder the variables
+reordered <- basewf_ws %>% 
+  subset(select = c(playerID:BABIP, nameGiven:debut, birthDate:highOPS,
+                    salary, POS, birthYear:nameLast, GS:DP, finalGame:bbrefID))
+```
+
+#### Salary overall:
+```{r, message=FALSE, warning=FALSE, fig.align='center'}
+reordered %>% 
+  ggplot(aes(x = age, y = salary)) +
+  geom_smooth(se = FALSE, color = "red") +
+  scale_y_continuous(labels = scales::comma) +
+  theme_bw()
+reordered %>% 
+  ggplot(aes(x = salary)) +
+  geom_smooth(aes(y = OPS)) +
+  geom_smooth(aes(y = BABIP), color = "red") +
+  annotate("text", label = "OPS", x = 31000000, y = 0.68, size = 5, 
+           color = "blue") +
+  annotate("text", label = "BABIP", x = 31000000, y = 0.3, size = 5, 
+           color = "red") +
+  scale_x_continuous(labels = scales::comma) +
+  theme_bw() +
+  theme(axis.title.y = element_blank())
+```
+
+#### Look at example player:
+**The graphs were not working with Carlos Correa since the filtering greatly limited the number of observations. So the following code uses Brandon Belt as the example player.**
+
+```{r, message=FALSE, warning=FALSE, fig.align='center'}
+batter_all <- reordered %>% filter(playerID == "beltbr01")
+
+batter_all %>% 
+  ggplot(aes(x = age, y = salary)) +
+  geom_point() +
+  #geom_smooth() +
+  geom_line() +
+  labs(title = paste(batter_all$nameFirst, batter_all$nameLast)) + 
+  scale_x_continuous(breaks = c(min(batter_all$age):max(batter_all$age))) + 
+  # updated axis to be whole numbers
+  theme_bw() +
+  scale_y_continuous(labels = scales::comma) 
+
+batter_all %>% 
+  ggplot(aes(x = age)) +
+  geom_smooth(aes(y = OPS)) +
+  geom_smooth(aes(y = BABIP), color = "red") +
+  labs(title = paste(batter_all$nameFirst, batter_all$nameLast)) + 
+  #scale_x_continuous(breaks = c(min(batter_all$age):max(batter_all$age))) +
+  annotate("text", label = "OPS", x = 23.8, y = 0.82, size = 5, color = "blue") +
+  annotate("text", label = "BABIP", x = 23.8, y = 0.37, size = 5, 
+           color = "red") +
+  theme_bw()
+
+# batter_all %>% 
+#   ggplot(aes(x = OPS, y = salary)) +
+#   geom_point(size = 2) +
+#   geom_smooth() +
+#   theme_bw() +
+#   scale_y_continuous(labels = scales::comma) 
+```
+
+#### Graphs with position
+```{r, message=FALSE, warning=FALSE, fig.align='center'}
+reordered %>% 
+  ggplot(aes(x = age, y = salary, color = POS)) +
+  geom_smooth(se = FALSE) +
+  theme_bw() +
+  scale_y_continuous(labels = scales::comma)
+reordered %>% 
+  ggplot(aes(x = age, y = OPS, color = POS)) +
+  geom_smooth(se = FALSE) +
+  theme_bw() +
+  scale_y_continuous(labels = scales::comma)
+reordered %>% 
+  ggplot(aes(x = OPS, y = salary, color = POS)) +
+  geom_smooth(se = FALSE) +
+  theme_bw() +
+  scale_y_continuous(labels = scales::comma)
+```
+
+
